@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Solana Pro Hub v3</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root { --purple: #9945FF; --green: #14F195; --bg: #050505; --card: #111; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: #fff; margin: 0; padding: 15px; font-size: 13px; }
+        .grid { display: grid; grid-template-columns: 420px 1fr; gap: 15px; }
+        .card { background: var(--card); border-radius: 12px; padding: 15px; border: 1px solid #222; }
+        
+        .docs-bar { background: #1a1a1a; border-left: 4px solid var(--purple); padding: 12px; border-radius: 4px; margin-bottom: 20px; font-size: 0.8rem; }
+        .route { font-family: monospace; color: var(--purple); font-weight: bold; margin-right: 10px; }
+
+        .btn-sync { background: var(--purple); color: #fff; width: 100%; padding: 12px; border: none; font-weight: bold; cursor: pointer; border-radius: 6px; margin-bottom: 15px; }
+        .selection-group { margin-bottom: 15px; background: #161616; padding: 10px; border-radius: 8px; }
+        .tabs { display: flex; gap: 2px; flex-wrap: wrap; margin-bottom: 8px; }
+        .tab { background: #222; color: #777; border: 1px solid #333; padding: 4px; cursor: pointer; border-radius: 4px; font-size: 0.7rem; flex: 1; text-align: center; }
+        .tab.active { background: #444; color: #fff; }
+
+        .token-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; max-height: 100px; overflow-y: auto; }
+        .token-btn { background: #222; border: 1px solid #333; color: #aaa; padding: 5px; border-radius: 4px; cursor: pointer; font-size: 0.65rem; }
+        .token-btn.active1 { background: var(--green); color: #000; font-weight: bold; }
+        .token-btn.active2 { background: var(--purple); color: #fff; }
+
+        .source-bar { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px; align-items: center; }
+        .src-btn { background: #222; color: #888; border: none; padding: 6px 12px; border-radius: 20px; cursor: pointer; font-size: 0.8rem; font-weight: bold; }
+        .src-btn.active { background: #fff; color: #000; }
+
+        .metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .m-card { background: #1a1a1a; padding: 10px; border-radius: 8px; border-left: 3px solid var(--green); }
+        .m-val { font-size: 1rem; font-weight: bold; }
+        .m-lbl { font-size: 0.65rem; color: #666; text-transform: uppercase; }
+
+        canvas { width: 100% !important; height: 450px !important; }
+    </style>
+</head>
+<body>
+    <div class="docs-bar">
+        <strong>API ENDPOINTS:</strong><br>
+        <span class="route">GET /api/v1/data/full</span> - Master Data JSON<br>
+        <span class="route">GET /api/v1/data/history/{sym}/{int}</span> - Binance OHLCV
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <button class="btn-sync" id="syncBtn" onclick="fetchFullData()">⚡ SYNC ALL SOLANA DATA</button>
+            <div id="controls" style="display:none">
+                <div class="selection-group">
+                    <span style="color:var(--green)">PRIMARY TOKEN</span>
+                    <div class="tabs" id="tabs1"></div>
+                    <div class="token-grid" id="grid1"></div>
+                </div>
+                <div class="selection-group">
+                    <span style="color:var(--purple)">COMPARE WITH</span>
+                    <div class="tabs" id="tabs2"></div>
+                    <div class="token-grid" id="grid2"></div>
+                    <button onclick="selectToken(2, null)" style="width:100%; margin-top:5px; background:#222; color:#f44; border:none; padding:5px; border-radius:4px; cursor:pointer;">Clear Comparison</button>
+                </div>
+                <button class="btn-sync" style="background:#333;" onclick="downloadData()">📥 DOWNLOAD JSON</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="source-bar">
+                <button class="src-btn active" id="btnBin" onclick="setSource('binance')">Binance Technical</button>
+                <button class="src-btn" id="btnCG" onclick="setSource('coingecko')">CoinGecko 7D Trend</button>
+                <div style="flex-grow:1"></div>
+                <div id="intBtns">
+                    <button class="tab active" onclick="setInterval('1h')">1H</button>
+                    <button class="tab" onclick="setInterval('4h')">4H</button>
+                    <button class="tab" onclick="setInterval('1d')">1D</button>
+                </div>
+            </div>
+            <div class="metrics">
+                <div class="m-card"><div class="m-lbl">Price</div><div class="m-val" id="mPrice">--</div></div>
+                <div class="m-card"><div class="m-lbl">Market Cap</div><div class="m-val" id="mCap">--</div></div>
+                <div class="m-card"><div class="m-lbl">24h Vol</div><div class="m-val" id="mVol">--</div></div>
+            </div>
+            <canvas id="masterChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let fullData = null;
+        let chart = null;
+        let t1 = { sym: null, sec: 'DeFi', obj: null };
+        let t2 = { sym: null, sec: 'DeFi', obj: null };
+        let source = 'binance';
+        let interval = '1h';
+
+        async function fetchFullData() {
+            const btn = document.getElementById('syncBtn');
+            btn.disabled = true; btn.innerText = "⏳ Loading Data...";
+            try {
+                const res = await fetch('/api/v1/data/full');
+                const json = await res.json();
+                if (json.status !== "success") throw new Error(json.message);
+                fullData = json.sectors;
+                document.getElementById('controls').style.display = 'block';
+                renderSectors();
+                selectSector(1, 'DeFi');
+                selectSector(2, 'DeFi');
+                selectToken(1, fullData['DeFi'][0].symbol);
+            } catch (e) { alert(e.message); }
+            finally { btn.disabled = false; btn.innerText = "⚡ SYNC ALL SOLANA DATA"; }
+        }
+
+        function renderSectors() {
+            const sectors = Object.keys(fullData);
+            [1, 2].forEach(num => {
+                const container = document.getElementById('tabs' + num);
+                container.innerHTML = "";
+                sectors.forEach(s => {
+                    const b = document.createElement('div');
+                    b.className = 'tab'; b.innerText = s;
+                    b.onclick = () => selectSector(num, s);
+                    b.id = `tab-${num}-${s}`;
+                    container.appendChild(b);
+                });
+            });
+        }
+
+        function selectSector(num, sector) {
+            if (num === 1) t1.sec = sector; else t2.sec = sector;
+            document.querySelectorAll(`#tabs${num} .tab`).forEach(t => t.classList.remove('active'));
+            document.getElementById(`tab-${num}-${sector}`).classList.add('active');
+            const grid = document.getElementById('grid' + num);
+            grid.innerHTML = "";
+            fullData[sector].forEach(token => {
+                const b = document.createElement('button');
+                b.className = 'token-btn'; b.innerText = token.symbol;
+                if ((num === 1 && t1.sym === token.symbol) || (num === 2 && t2.sym === token.symbol)) {
+                    b.classList.add(num === 1 ? 'active1' : 'active2');
+                }
+                b.onclick = () => selectToken(num, token.symbol);
+                grid.appendChild(b);
+            });
+        }
+
+        function selectToken(num, sym) {
+            const sector = num === 1 ? t1.sec : t2.sec;
+            const token = sym ? fullData[sector].find(t => t.symbol === sym) : null;
+            if (num === 1) { t1.sym = sym; t1.obj = token; } else { t2.sym = sym; t2.obj = token; }
+            selectSector(1, t1.sec);
+            selectSector(2, t2.sec);
+            updateUI();
+        }
+
+        function updateUI() {
+            if (t1.obj) {
+                document.getElementById('mPrice').innerText = "$" + t1.obj.coingecko.price.toLocaleString();
+                document.getElementById('mCap').innerText = "$" + (t1.obj.coingecko.mcap / 1e9).toFixed(2) + "B";
+                document.getElementById('mVol').innerText = "$" + (t1.obj.coingecko.vol / 1e6).toFixed(1) + "M";
+            }
+            updateChart();
+        }
+
+        function setSource(src) {
+            source = src;
+            document.getElementById('btnBin').classList.toggle('active', src === 'binance');
+            document.getElementById('btnCG').classList.toggle('active', src === 'coingecko');
+            document.getElementById('intBtns').style.visibility = src === 'binance' ? 'visible' : 'hidden';
+            updateChart();
+        }
+
+        function setInterval(val) {
+            interval = val;
+            document.querySelectorAll('#intBtns .tab').forEach(b => b.classList.toggle('active', b.innerText === val.toUpperCase()));
+            updateChart();
+        }
+
+        function updateChart() {
+            if (!t1.obj || !fullData) return;
+            const ctx = document.getElementById('masterChart').getContext('2d');
+            
+            const d1 = source === 'binance' ? t1.obj.binance[interval] : t1.obj.coingecko.sparkline;
+            const d2 = t2.obj ? (source === 'binance' ? t2.obj.binance[interval] : t2.obj.coingecko.sparkline) : [];
+
+            if (chart) chart.destroy();
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: d1.map((_, i) => i),
+                    datasets: [
+                        { label: t1.sym, data: d1, borderColor: '#14F195', tension: 0.4, fill: true, backgroundColor: 'rgba(20, 241, 149, 0.05)' },
+                        ...(t2.obj ? [{ label: t2.sym, data: d2, borderColor: '#9945FF', tension: 0.4, borderDash: [5, 5] }] : [])
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: { y: { grid: { color: '#222' } }, x: { display: false } },
+                    plugins: { legend: { labels: { color: '#fff' } } }
+                }
+            });
+        }
+
+        function downloadData() {
+            const blob = new Blob([JSON.stringify(fullData, null, 4)], {type: "application/json"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = "solana_master_data.json"; a.click();
+        }
+    </script>
+</body>
+</html>
